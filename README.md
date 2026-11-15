@@ -64,7 +64,11 @@ To review how agents use the server, set `DEFTER_QUERY_LOG` to a file path. Each
 
 ## Ask in plain language
 
-`recall` answers a question in any wording, English or Turkish. It ranks curated notes first, fusing FTS5 keyword matches with bge-m3 passage similarity by reciprocal rank, then adds conversations that contain every word of four or more letters from the question. Dotted and dotless i and Turkish diacritics are folded, and words longer than five letters match by their first five, so suffixed forms still match.
+`recall` answers a question in any wording, English or Turkish. It ranks curated notes first, fusing FTS5 keyword matches with bge-m3 passage similarity by reciprocal rank, then conversations by bge-m3 similarity. Dotted and dotless i and Turkish diacritics are folded, and words longer than five letters match by their first five, so suffixed forms still match.
+
+Notes are searched in overlapping windows of 220 words. Conversations are searched in pieces of up to 400 words cut between exchanges, an exchange being one user turn and the replies to it. Short exchanges share a piece; a longer one is cut between paragraphs, and its later pieces repeat the start of its question. Every piece starts with the conversation's title, and the extractor's one-line tool-call summaries are left out. A conversation is ranked by its best piece. Its excerpt comes from that piece, and `offset` gives where the piece starts, so `read` can continue from there. A conversation whose best piece is word for word the same as an earlier result's, such as a second export of one chat, is shown once.
+
+Conversations are ranked by meaning alone because, on 32 reworded and 7 exact-term questions aimed at known chats, adding keyword ranks at any weight made both sets worse. Keyword search over the pieces stands in where meaning is blind: for conversations with pieces not yet embedded, and for all of them when there are no vectors or the embedding server fails.
 
 Passage vectors come from a separate step, so refresh never calls a model:
 
@@ -73,7 +77,15 @@ uv run python -m defter embed --db data/private/processed/cfv.sqlite
 uv run python -m defter recall "When did the review schedule change?" --db data/private/processed/cfv.sqlite
 ```
 
-`embed` sends note passages of up to 220 words to an OpenAI-compatible `/v1/embeddings` endpoint: by default a local Ollama at `http://localhost:11434/v1/embeddings` with the `bge-m3` model. Set `DEFTER_EMBED_URL` and `DEFTER_EMBED_MODEL` to change them. The endpoint receives note text, so keep it local ([Privacy](docs/privacy.md)). Vectors are cached in the database by passage text and model. A later run embeds only new or changed passages and removes vectors no passage uses. Without vectors, or with the endpoint unreachable, recall returns keyword results with `semantic: false` and a `warning`. Conversations are matched by keyword as whole transcripts and are not embedded.
+`embed` sends passages to an OpenAI-compatible `/v1/embeddings` endpoint: by default a local Ollama at `http://localhost:11434/v1/embeddings` with the `bge-m3` model. Set `DEFTER_EMBED_URL` and `DEFTER_EMBED_MODEL` to change them. The endpoint receives note and conversation text, so keep it local ([Privacy](docs/privacy.md)). Notes go first, then conversations, newest first. `--limit N` stops after N passages and reports how many remain for a later run, which keeps a CPU-only machine's scheduled run short. Vectors are cached in the database by passage text and model. A later run embeds only new or changed passages and removes vectors no passage uses. Appending to a conversation changes only its last pieces, so the rest keep their vectors. Without vectors, or with the endpoint unreachable, recall returns keyword results with `semantic: false` and a `warning`.
+
+Embedding the whole archive is much faster on a GPU. Vectors depend only on passage text, so another machine's database can supply them:
+
+```sh
+uv run python -m defter copy-vectors /path/to/gpu-embedded/cfv.sqlite --db data/private/processed/cfv.sqlite
+```
+
+This copies the vectors that this database's passages use and lack. Both databases must be refreshed from the same notes and archive content; the files may sit at different paths.
 
 `read` returns a record's full stored text by a reference from recall, lookup or delta, or a note by its vault path such as `topics/bilun`, in windows of up to 50,000 characters. It works when the agent cannot open the server's files, for example over ssh.
 

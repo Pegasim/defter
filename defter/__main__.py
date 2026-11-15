@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .changes import DeltaResult, delta
 from .maintenance import run
-from .recall import RecallResult, embed, recall
+from .recall import RecallResult, copy_vectors, embed, recall
 from .store import DEFAULT_DB, DEFAULT_VAULT, LookupResult, ReadResult, load_demo, lookup, read, refresh
 
 INSTRUCTIONS = (
@@ -59,16 +59,20 @@ def serve(db: Path):
         server.tool(annotations=read_only)(tool)
 
     @server.tool(name="recall", annotations=read_only)
-    def recall_tool(query: str, start: str | None = None, end: str | None = None, limit: int = 8) -> RecallResult:
+    def recall_tool(query: str, start: str | None = None, end: str | None = None, limit: int = 8,
+                    conversations: int = 4) -> RecallResult:
         """Answer a natural-language question from memory: curated notes first, then conversations.
 
-        Ask in any wording, English or Turkish. Notes are ranked by keywords and meaning together;
-        `matched` says which. Optional inclusive local dates (YYYY-MM-DD) filter by the note's date.
-        Cite returned references; `read` gives the full text. If `semantic` is false, results are
-        keyword matches only and `warning` says why.
+        Ask in any wording, English or Turkish. Notes and conversations are each ranked by keywords and
+        meaning together; `matched` says which. A conversation's excerpt is its best-matching part, and
+        `read` with that result's `offset` continues from there. `limit` caps the notes (up to 30) and
+        `conversations` the conversations after them (0 to 20; ask for more when looking for one past
+        chat). Optional inclusive local dates (YYYY-MM-DD) filter by the record's date. Cite returned
+        references. If `semantic` is false, results are keyword matches only and `warning` says why.
         """
-        return logged("recall", {"query": query, "start": start, "end": end, "limit": limit},
-                      lambda: recall(db, query, start, end, limit))
+        return logged("recall", {"query": query, "start": start, "end": end, "limit": limit,
+                                 "conversations": conversations},
+                      lambda: recall(db, query, start, end, limit, conversations))
 
     @server.tool(name="read", annotations=read_only)
     def read_tool(reference: str, offset: int = 0, limit: int = 20000) -> ReadResult:
@@ -104,9 +108,13 @@ def serve(db: Path):
 def main():
     parser = argparse.ArgumentParser(description="Defter: CFV timeline and second-brain memory")
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("load", "serve", "refresh", "embed", "recall", "read", "delta"):
+    for command in ("load", "serve", "refresh", "embed", "copy-vectors", "recall", "read", "delta"):
         child = commands.add_parser(command)
         child.add_argument("--db", type=Path, default=DEFAULT_DB)
+        if command == "embed":
+            child.add_argument("--limit", type=int, help="Embed at most this many passages; the rest wait")
+        if command == "copy-vectors":
+            child.add_argument("source", type=Path, help="Another Defter database, e.g. one embedded on a GPU")
         if command == "refresh":
             child.add_argument("--vault", type=Path, default=DEFAULT_VAULT)
             child.add_argument("--calendar", type=Path, action="append", default=[])
@@ -148,9 +156,12 @@ def main():
         if args.command == "embed":
             progress = (lambda done, total: print(f"\r{done}/{total}", end="", file=sys.stderr)) \
                 if sys.stderr.isatty() else None
-            report = embed(args.db, progress=progress)
-            print(f"Embedded {report['embedded']} new passages with {report['model']}; "
-                  f"{report['passages']} note passages, {report['pruned']} unused vectors removed")
+            report = embed(args.db, progress=progress, limit=args.limit)
+            print(f"Embedded {report['embedded']} new passages with {report['model']}, {report['remaining']} left "
+                  f"for a later run; {report['passages']} passages, {report['pruned']} unused vectors removed")
+            return
+        if args.command == "copy-vectors":
+            print(f"Copied {copy_vectors(args.source, args.db)} vectors from {args.source}")
             return
         result = {
             "recall": lambda: recall(args.db, args.query, args.start, args.end, args.limit),

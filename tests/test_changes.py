@@ -20,8 +20,10 @@ class ChangesTest(unittest.TestCase):
         self.vault, self.db = self.temporary / "vault", self.temporary / "cfv.sqlite"
         self.notes = self.vault / "notes" / "topics"
         self.notes.mkdir(parents=True)
+        written = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc).timestamp()  # before every refresh time below
         for name in ("alpha", "beta", "gamma"):
             (self.notes / f"{name}.md").write_text(f"# {name.title()}\n\nThe {name} plan.\n")
+            os.utime(self.notes / f"{name}.md", (written, written))
 
     def tearDown(self):
         shutil.rmtree(self.temporary)
