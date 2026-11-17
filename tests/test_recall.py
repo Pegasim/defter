@@ -1,11 +1,13 @@
 import hashlib
 import re
 import shutil
+import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
 
-from defter.recall import CHAT_WORDS, QUESTION_WORDS, chat_passages, copy_vectors, embed, recall
+from defter.recall import CHAT_WORDS, QUESTION_WORDS, chat_passages, copy_vectors, embed, export_vectors, recall
 from defter.store import ROOT, read, refresh
 
 SYNONYMS = {"port": "harbour"}
@@ -239,6 +241,20 @@ class ChatRecallTest(unittest.TestCase):
         self.assertEqual(embed(self.db, fake_embedder(calls), model="bge-m3")["embedded"], 0)
         self.assertEqual(calls, [])
         self.assertEqual(copy_vectors(other, self.db), 0)
+
+
+    def test_a_vectors_only_export_carries_no_records_and_works_with_copy_vectors(self):
+        embed(self.db, fake_embedder(), model="bge-m3")
+        out = self.temporary / "vectors.sqlite"
+        count = export_vectors(self.db, out)
+        self.assertGreater(count, 0)
+        with closing(sqlite3.connect(out)) as conn:
+            self.assertEqual({row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}, {"embedding"})
+        other = self.temporary / "elsewhere.sqlite"
+        refresh(other, self.vault, archive=self.archive, source_name="archive")
+        self.assertEqual(copy_vectors(out, other), count)
+        with self.assertRaises(ValueError):
+            export_vectors(self.db, out)  # never overwrites
 
 
 if __name__ == "__main__":

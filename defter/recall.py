@@ -243,6 +243,23 @@ def copy_vectors(source: Path, path: Path) -> int:
     return copied
 
 
+def export_vectors(path: Path, out: Path) -> int:
+    """Write only the embedding cache to a new database file and say how many vectors it holds.
+
+    The laptop database can hold personal life data (defter.life); this file holds none, so it is what to copy to the
+    VPS before `copy-vectors` there.
+    """
+    if out.exists():
+        raise ValueError(f"{out} exists; remove it first")
+    with closing(sqlite3.connect(out)) as conn:
+        conn.execute("ATTACH DATABASE ? AS src", (path.resolve().as_uri() + "?mode=ro",))
+        conn.execute("CREATE TABLE embedding (hash TEXT NOT NULL, model TEXT NOT NULL, vector BLOB NOT NULL, "
+                     "PRIMARY KEY (hash, model))")
+        with conn:
+            conn.execute("INSERT INTO embedding SELECT hash, model, vector FROM src.embedding")
+        return conn.execute("SELECT count(*) FROM embedding").fetchone()[0]
+
+
 def keyword_query(text: str, every: bool = False) -> str:
     """The question's words, Turkish-folded; words longer than five letters match by their first five.
 

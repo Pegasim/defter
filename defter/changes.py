@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS brain_change (
     change TEXT NOT NULL CHECK (change IN ('initial', 'added', 'changed', 'removed')), changed_utc TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS brain_change_time ON brain_change (changed_utc, ref);
 """
-HIDDEN_KINDS = ("dream",)
+HIDDEN_KINDS = ("dream", "whatsapp", "email")  # personal life data (defter.life) never shows in delta
 
 
 class DeltaResult(TypedDict):

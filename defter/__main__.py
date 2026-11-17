@@ -8,8 +8,9 @@ from pathlib import Path
 
 from .changes import DeltaResult, delta
 from .maintenance import run
-from .recall import RecallResult, copy_vectors, embed, recall
-from .store import DEFAULT_DB, DEFAULT_VAULT, LookupResult, ReadResult, load_demo, lookup, read, refresh
+from .life import unpack_takeout
+from .recall import RecallResult, copy_vectors, embed, export_vectors, recall
+from .store import DEFAULT_DB, DEFAULT_LIFE, DEFAULT_VAULT, LookupResult, ReadResult, load_demo, lookup, read, refresh
 
 INSTRUCTIONS = (
     "Defter holds the owner's memory (curated notes, filed decisions, conversation archive) and their CFV timeline. "
@@ -108,9 +109,14 @@ def serve(db: Path):
 def main():
     parser = argparse.ArgumentParser(description="Defter: CFV timeline and second-brain memory")
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("load", "serve", "refresh", "embed", "copy-vectors", "recall", "read", "delta"):
+    for command in ("load", "serve", "refresh", "embed", "copy-vectors", "export-vectors", "life-unpack", "recall", "read", "delta"):
         child = commands.add_parser(command)
         child.add_argument("--db", type=Path, default=DEFAULT_DB)
+        if command == "export-vectors":
+            child.add_argument("out", type=Path, help="New database file holding only the vectors")
+        if command == "life-unpack":
+            child.add_argument("zips", type=Path, nargs="+", help="Google Takeout zip files")
+            child.add_argument("--life", type=Path, default=DEFAULT_LIFE, help="Life folder to fill")
         if command == "embed":
             child.add_argument("--limit", type=int, help="Embed at most this many passages; the rest wait")
         if command == "copy-vectors":
@@ -122,6 +128,7 @@ def main():
             child.add_argument("--archive", type=Path, help="Redacted conversation Markdown from the extractor")
             child.add_argument("--source-name", default="codex", help="Stable identity for this session source")
             child.add_argument("--legacy", type=Path, help="Older conversation exports with YAML frontmatter")
+            child.add_argument("--life", type=Path, help="Personal exports (WhatsApp, Takeout mail, calendar, contacts); laptop only")
         if command == "recall":
             child.add_argument("query")
             child.add_argument("--start")
@@ -148,8 +155,11 @@ def main():
             return
         if args.command == "refresh":
             refresh(args.db, args.vault, args.calendar, args.sessions, args.source_name, args.archive,
-                    legacy=args.legacy)
+                    legacy=args.legacy, life=args.life)
             print(f"Refreshed CFV timeline at {args.db}")
+            return
+        if args.command == "life-unpack":
+            print(f"Unpacked into {args.life}: {unpack_takeout(args.zips, args.life)}")
             return
         if not args.db.is_file():
             parser.error("Database missing. Run load for the synthetic demo or refresh to import sources.")
@@ -159,6 +169,9 @@ def main():
             report = embed(args.db, progress=progress, limit=args.limit)
             print(f"Embedded {report['embedded']} new passages with {report['model']}, {report['remaining']} left "
                   f"for a later run; {report['passages']} passages, {report['pruned']} unused vectors removed")
+            return
+        if args.command == "export-vectors":
+            print(f"Wrote {export_vectors(args.db, args.out)} vectors to {args.out}")
             return
         if args.command == "copy-vectors":
             print(f"Copied {copy_vectors(args.source, args.db)} vectors from {args.source}")

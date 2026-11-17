@@ -21,11 +21,13 @@ from cfv.ingest import Batch, drop_other_snapshots
 from cfv.sources import calendar_ics
 
 from . import changes, recall
+from .life import ingest_life
 from .maintenance import ROOT, TOOLS, module, run
 
 FIXTURES = ROOT / "fixtures"
 DEFAULT_DB = ROOT / "data/processed/cfv.sqlite"
 DEFAULT_VAULT = ROOT / "data/vault"
+DEFAULT_LIFE = ROOT / "data/private/life"
 APPLICATION_ID = 0x42524149
 EXCERPT_LIMIT = 600
 
@@ -242,14 +244,19 @@ def ingest_notes(conn, vault: Path):
 
 
 def refresh(path: Path, vault: Path, calendars=(), sessions: Path | None = None, source_name="codex",
-            archive: Path | None = None, now: dt.datetime | None = None, legacy: Path | None = None):
-    """Refresh selected sources in a staging copy, retaining all other CFV sources; log what changed at `now`."""
+            archive: Path | None = None, now: dt.datetime | None = None, legacy: Path | None = None,
+            life: Path | None = None):
+    """Refresh selected sources in a staging copy, retaining all other CFV sources; log what changed at `now`.
+
+    `life` is a folder of personal exports (WhatsApp chats, Takeout mail, calendar, contacts; see defter.life). Use it
+    only on the machine that draws the CFV site: the VPS refresh must not get it.
+    """
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", source_name):
         raise ValueError("Source name must be a short slug of letters, digits, '_' or '-'")
     path.parent.mkdir(parents=True, exist_ok=True)
     if sessions is not None and not sessions.is_dir():
         raise ValueError(f"Session directory does not exist: {sessions}")
-    for folder, label in ((archive, "Archive"), (legacy, "Legacy archive")):
+    for folder, label in ((archive, "Archive"), (legacy, "Legacy archive"), (life, "Life folder")):
         if folder is not None and not folder.is_dir():
             raise ValueError(f"{label} directory does not exist: {folder}")
     with open(path.with_suffix(".lock"), "a") as lock:
@@ -281,6 +288,8 @@ def refresh(path: Path, vault: Path, calendars=(), sessions: Path | None = None,
                         ingest_archive(conn, archive, source_name)
                     if legacy is not None:
                         ingest_legacy(conn, legacy)
+                    if life is not None:
+                        ingest_life(conn, life)
                     ingest_notes(conn, vault)
                     conn.execute("INSERT OR REPLACE INTO meta VALUES ('brain_mode', 'private')")
                     conn.execute("DELETE FROM brain_reference")
