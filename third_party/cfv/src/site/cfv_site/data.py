@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import os
 import sqlite3
 import threading
@@ -21,11 +22,14 @@ from cfv_site import match
 from cfv_site.decisions import Decisions, ordered
 
 PHOTO_KINDS = ("photo", "video")
+# Defter'in kayıtları (brain_*): kürate notlar "note" katmanına, sohbet arşivi "convo" katmanına düşer.
 DENSITY_KINDS = {"photo": "photo", "video": "photo", "whatsapp": "whatsapp", "calendar": "calendar",
-                 "note": "note", "email": "email"}
+                 "note": "note", "email": "email", "brain_note": "note",
+                 "brain_conversation": "convo", "brain_session": "convo"}
+EVENT_BODY_LIMIT = 12000  # panelde gösterilen en çok karakter; sohbetler yüzlerce KB olabilir
 # kişinin o dönemdeki ağırlığı: bir ortak etkinlik ≈ 15 mesaj
 WEIGHT = {"whatsapp": 1, "email": 2, "photo": 4, "video": 4, "note": 3, "calendar": 15}
-MAX = {"person": 45, "calendar": 45, "photos": 45, "note": 20, "chat": 12}
+MAX = {"person": 45, "calendar": 45, "photos": 45, "note": 20, "chat": 12, "convo": 20}
 
 
 def open_ro(path: Path) -> sqlite3.Connection:
@@ -292,13 +296,21 @@ class Store:
             for r in c.execute(
                     "SELECT e.id, e.title, e.local_date, length(e.body) L, "
                     "(SELECT group_concat(person_id) FROM event_person WHERE event_id = e.id) people "
-                    "FROM event e WHERE e.kind = 'note' AND e.local_date BETWEEN ? AND ? "
+                    "FROM event e WHERE e.kind IN ('note','brain_note') AND e.local_date BETWEEN ? AND ? "
                     "ORDER BY L DESC LIMIT ?", (d0, d1, MAX["note"])):
                 nodes.append({"id": f"n:{r['id']}", "type": "note", "label": r["title"] or "(not)",
                               "t": r["local_date"], "w": r["L"] or 1})
                 for pid in {m.canon_of_person.get(int(p)) for p in (r["people"] or "").split(",") if p}:
                     if pid in shown:
                         links.append({"s": f"p:{pid}", "t": f"n:{r['id']}", "k": "mentioned"})
+
+            # -- Defter sohbet arşivi (Claude Code, Codex, Antigravity, eski dışa aktarımlar): en uzunlar
+            for r in c.execute(
+                    "SELECT e.id, e.title, e.local_date, length(e.body) L FROM event e "
+                    "WHERE e.kind IN ('brain_conversation','brain_session') AND e.local_date BETWEEN ? AND ? "
+                    "ORDER BY L DESC LIMIT ?", (d0, d1, MAX["convo"])):
+                nodes.append({"id": f"s:{r['id']}", "type": "convo", "label": r["title"] or "(sohbet)",
+                              "t": r["local_date"], "w": r["L"] or 1})
 
         # -- grup sohbetleri
         chats = []
@@ -389,8 +401,9 @@ class Store:
     def calendar_event(self, eid: int) -> dict | None:
         m = self.model()
         with self.conn() as c:
-            r = c.execute("SELECT id, title, body, start_utc, end_utc, local_date, time_quality FROM event "
-                          "WHERE id = ? AND kind IN ('calendar','note')", (eid,)).fetchone()
+            r = c.execute("SELECT id, title, body, start_utc, end_utc, local_date, time_quality, kind, payload FROM event "
+                          "WHERE id = ? AND kind IN ('calendar','note','brain_note','brain_conversation','brain_session')",
+                          (eid,)).fetchone()
             if not r:
                 return None
             ppl = {m.canon_of_person.get(p) for p, in c.execute(
@@ -399,8 +412,15 @@ class Store:
                 "SELECT m.id, p.local_date d, p.kind FROM event_link l JOIN event p ON p.id = l.a "
                 "JOIN media m ON m.event_id = p.id WHERE l.b = ? AND l.kind = 'photo_at' AND m.role = 'original' "
                 "ORDER BY p.start_utc LIMIT 120", (eid,))]
-        return {**dict(r), "people": [{"id": p, "name": m.name[p]} for p in ppl if p in m.name],
-                "photos": photos}
+        out = {**dict(r), "people": [{"id": p, "name": m.name[p]} for p in ppl if p in m.name], "photos": photos}
+        payload = json.loads(out.pop("payload") or "{}")
+        body = out["body"] or ""
+        out["body_chars"] = len(body)
+        if len(body) > EVENT_BODY_LIMIT:
+            out["body"] = body[:EVENT_BODY_LIMIT]
+        # Defter başvurusu (ör. "note:topics/bilun"): ajanlar `read` ile tam metni bu adla açar
+        out["ref"] = payload.get("brain_ref") or (f"note:{payload['note_path']}" if payload.get("note_path") else None)
+        return out
 
     def media_path(self, mid: int) -> tuple[str, str, str, str | None] | None:
         """İstemci yalnız media.id bilir; yol her zaman DB'den gelir (yol dolaşma yok).

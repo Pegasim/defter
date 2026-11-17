@@ -2,7 +2,7 @@
   color-scheme: dark;
   --bg: #17181c; --bg2: #1f2026; --bg3: #272930; --line: #34363e; --line2: #4a4d57;
   --text: #d8d8dc; --muted: #8b8d96; --accent: #6d8cff;
-  --person: #8fa8ff; --calendar: #f0a35e; --photos: #5fc9a0; --note: #c49cf0; --chat: #ef7b86;
+  --person: #8fa8ff; --calendar: #f0a35e; --photos: #5fc9a0; --note: #c49cf0; --chat: #ef7b86; --convo: #5cc8e6;
   --ok: #5fc9a0; --bad: #ef7b86;
 }
 * { box-sizing: border-box; }

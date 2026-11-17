@@ -25,9 +25,10 @@ const TYPES = {
   calendar: { label: 'Takvim', color: '--calendar', band: 1.0,  r: [4, 12] },
   photos:   { label: 'Foto',   color: '--photos',   band: 1.9,  r: [5, 17] },
   note:     { label: 'Not',    color: '--note',     band: 2.7,  r: [3, 7] },
+  convo:    { label: 'Sohbet', color: '--convo',    band: -2.5, r: [3, 8] },  // Defter'in sohbet arşivi
 };
 const SRC = { contacts: 'Rehber', whatsapp: 'WhatsApp', 'iphone-photos': 'Fotoğraflar', email: 'E-posta' };
-const KIND_TOT = { whatsapp: 'mesaj', photo: 'foto', video: 'video', calendar: 'etkinlik', note: 'not', email: 'e-posta' };
+const KIND_TOT = { whatsapp: 'mesaj', photo: 'foto', video: 'video', calendar: 'etkinlik', note: 'not', convo: 'sohbet', email: 'e-posta' };
 const totalsText = t => Object.entries(t || {}).filter(([, n]) => n).sort((a, b) => b[1] - a[1])
   .map(([k, n]) => `${fmtN(n)} ${KIND_TOT[k] || k}`).join(' · ');
 
@@ -203,11 +204,16 @@ function paint() {
   if (bs.length) {
     const stepMs = (S.density.step === 'week' ? 7 : 1) * DAY;
     const bw = Math.max(1, xOf(S.t0 + stepMs) - xOf(S.t0) - (stepMs / (S.t1 - S.t0) * W > 4 ? 1 : 0));
-    let mw = 1, mp = 1;
-    for (const b of bs) { mw = Math.max(mw, b.whatsapp || 0); mp = Math.max(mp, b.photo || 0); }
+    let mw = 1, mp = 1, mc = 1, mn = 1;
+    for (const b of bs) {
+      mw = Math.max(mw, b.whatsapp || 0); mp = Math.max(mp, b.photo || 0);
+      mc = Math.max(mc, b.convo || 0); mn = Math.max(mn, b.note || 0);
+    }
     for (const b of bs) {
       const x = xOf(Date.parse(b.d + 'T00:00:00Z'));
       if (x + bw < 0 || x > W) continue;
+      if (b.convo) { ctx.fillStyle = C.convoA; const h = Math.sqrt(b.convo / mc) * 34; ctx.fillRect(x, ay - 2 - h, bw, h); }
+      if (b.note) { ctx.fillStyle = C.noteA; const h = Math.sqrt(b.note / mn) * 34; ctx.fillRect(x, ay + 2, bw, h); }
       if (b.whatsapp) { ctx.fillStyle = C.chatA; const h = Math.sqrt(b.whatsapp / mw) * 34; ctx.fillRect(x, ay - 2 - h, bw, h); }
       if (b.photo) { ctx.fillStyle = C.photosA; const h = Math.sqrt(b.photo / mp) * 34; ctx.fillRect(x, ay + 2, bw, h); }
     }
@@ -264,6 +270,8 @@ function paint() {
       else { ctx.fillStyle = col; ctx.fill(); }
       ctx.restore();
       ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2); ctx.stroke();
+    } else if (d.type === 'convo') {
+      ctx.fillStyle = col; roundRect(d.x - d.r * 1.3, d.y - d.r * 0.85, d.r * 2.6, d.r * 1.7, 3); ctx.fill();
     } else if (d.type === 'note') {
       ctx.fillStyle = col; ctx.beginPath();
       ctx.moveTo(d.x, d.y - d.r * 1.3); ctx.lineTo(d.x + d.r * 1.1, d.y); ctx.lineTo(d.x, d.y + d.r * 1.3); ctx.lineTo(d.x - d.r * 1.1, d.y);
@@ -284,13 +292,13 @@ function paint() {
   const prio = d => d === focus ? 1e9 : (near && near.has(d.id)) ? 1e8 + d.r :
     focus ? -1 : d.type === 'person' ? 100 + d.r : d.type === 'chat' ? 90 + d.r :
     d.type === 'calendar' ? (spanDays < 60 || d.r >= 9 ? 50 + d.r : -1) :
-    d.type === 'photos' ? (spanDays < 40 ? 20 + d.r : -1) : d.type === 'note' && spanDays < 25 ? 10 : -1;
+    d.type === 'photos' ? (spanDays < 40 ? 20 + d.r : -1) : (d.type === 'note' || d.type === 'convo') && spanDays < 25 ? 10 : -1;
   const cand = [...S.nodes.values()].map(d => [prio(d), d]).filter(x => x[0] >= 0).sort((a, b) => b[0] - a[0]);
   const boxes = [];
   for (const [, d] of cand) {
     ctx.font = (d.type === 'person' ? '600 ' : '') + '12px system-ui, sans-serif';
     const label = d.label.length > 28 ? d.label.slice(0, 27) + '…' : d.label;
-    const y = d.y + d.r * (d.type === 'note' ? 1.3 : d.type === 'calendar' ? 0.8 : 1) + 4;
+    const y = d.y + d.r * (d.type === 'note' ? 1.3 : d.type === 'calendar' ? 0.8 : d.type === 'convo' ? 0.85 : 1) + 4;
     const w = ctx.measureText(label).width + 6, box = [d.x - w / 2, y, d.x + w / 2, y + 14];
     if (d !== focus && boxes.some(o => box[0] < o[2] && box[2] > o[0] && box[1] < o[3] && box[3] > o[1])) continue;
     boxes.push(box);
@@ -318,8 +326,8 @@ function resize() {
 
 function loadColors() {
   const C = S.colors;
-  for (const k of ['bg', 'line', 'line2', 'text', 'muted', 'person', 'calendar', 'photos', 'note', 'chat']) C[k] = css('--' + k);
-  for (const k of ['person', 'calendar', 'photos', 'note', 'chat']) C[k + 'A'] = hexA(C[k], k === 'chat' || k === 'photos' ? 0.32 : 0.55);
+  for (const k of ['bg', 'line', 'line2', 'text', 'muted', 'person', 'calendar', 'photos', 'note', 'chat', 'convo']) C[k] = css('--' + k);
+  for (const k of ['person', 'calendar', 'photos', 'note', 'chat', 'convo']) C[k + 'A'] = hexA(C[k], k === 'chat' || k === 'photos' ? 0.32 : 0.55);
   C.link = hexA(C.muted, 0.22); C.linkOn = hexA(C.text, 0.75);
 }
 function hexA(hex, a) {
@@ -428,7 +436,7 @@ function showTip(d, x, y) {
   else if (d.type === 'calendar') sub = `${fmtD(d.t)}${d.allday ? ' · tüm gün' : ''}${d.photos ? ` · ${d.photos} foto` : ''}`;
   else if (d.type === 'photos') sub = d.from === d.to ? fmtD(d.from) : `${fmtD(d.from)} – ${fmtD(d.to)}`;
   else if (d.type === 'chat') sub = `${fmtN(d.n)} mesaj (bu aralıkta)`;
-  else if (d.type === 'note') sub = fmtD(d.t);
+  else if (d.type === 'note' || d.type === 'convo') sub = fmtD(d.t);
   tip.innerHTML = `<b>${esc(d.label)}</b><span class="muted">${TYPES[d.type].label}</span> · ${sub}`;
   tip.hidden = false;
   const r = tip.getBoundingClientRect();
@@ -446,7 +454,7 @@ function select(d) {
   S.selected = d; draw();
   const id = d.id.split(':')[1];
   if (d.type === 'person') openPerson(+id);
-  else if (d.type === 'calendar' || d.type === 'note') openEvent(+id, d.type);
+  else if (d.type === 'calendar' || d.type === 'note' || d.type === 'convo') openEvent(+id, d.type);
   else if (d.type === 'photos') openPhotos(d);
   else if (d.type === 'chat') openChat(d);
 }
@@ -586,12 +594,15 @@ async function openEvent(id, kind) {
   const time = e.time_quality === 'day' ? 'tüm gün' :
     new Date(e.start_utc).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) +
     (e.end_utc ? '–' + new Date(e.end_utc).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : '');
-  openPanel(`<div class="kind">${kind === 'note' ? 'Not' : 'Takvim'}</div><h2>${esc(e.title || '(adsız)')}</h2>
+  const KIND_NAME = { note: 'Not', convo: 'Sohbet', calendar: 'Takvim' };
+  openPanel(`<div class="kind">${KIND_NAME[kind] || 'Takvim'}</div><h2>${esc(e.title || '(adsız)')}</h2>
     <div class="muted">${fmtD(e.local_date)} · ${esc(time)}</div>
+    ${e.ref ? `<div class="muted">Defter: <code>${esc(e.ref)}</code></div>` : ''}
     ${e.body ? `<h3>İçerik</h3><div>${esc(e.body).replace(/\n/g, '<br>')}</div>` : ''}
+    ${e.body_chars > (e.body || '').length ? `<div class="muted">… ilk ${e.body.length.toLocaleString('tr-TR')} karakter; toplam ${e.body_chars.toLocaleString('tr-TR')}. Tamamı için Defter'de <code>read</code>.</div>` : ''}
     <h3>Kişiler</h3>${e.people.length ? `<div class="people">${e.people.map(p => `<button data-person="${p.id}">${esc(p.name)}</button>`).join('')}</div>` : '<div class="empty">Yok.</div>'}
-    ${kind === 'note' ? '' : `<h3>Bu sırada çekilen fotolar (${e.photos.length})</h3>${photoGrid(e.photos)}`}`);
-  $('.kind', pbody).style.color = S.colors[kind === 'note' ? 'note' : 'calendar'];
+    ${kind === 'note' || kind === 'convo' ? '' : `<h3>Bu sırada çekilen fotolar (${e.photos.length})</h3>${photoGrid(e.photos)}`}`);
+  $('.kind', pbody).style.color = S.colors[kind === 'note' ? 'note' : kind === 'convo' ? 'convo' : 'calendar'];
   wirePanel(null);
 }
 

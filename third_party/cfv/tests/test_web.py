@@ -237,6 +237,37 @@ def test_require_synthetic_accepts_synth(dbfile, tmp_path):
     assert Store(dbfile, Decisions(tmp_path / "d.sqlite"), require_synthetic=True).meta()["synthetic"]
 
 
+def test_defter_notes_and_conversations_are_drawn(tmp_path):
+    """Defter'in DB'sinde yalnız brain_note / brain_conversation var; site bunları da çizer ('Veri yok' olmaz)."""
+    import datetime as dt
+    from cfv import db as cdb
+    from cfv.ingest import Batch
+    path = cdb.init_db(tmp_path / "defter.sqlite")
+    long_chat = "**user** · 10:00Z\n\n" + "plan the harbour audit " * 1200
+    with cdb.connect(path) as conn:
+        batch = Batch(conn, "brain-notes", tmp_path / "vault", "test")
+        batch.event("note:topics/bilun", "brain_note", dt.datetime(2026, 11, 2, 9, tzinfo=dt.timezone.utc), title="Bilun",
+                    body="Kural motoru.", payload={"note_path": "topics/bilun"})
+        chats = Batch(conn, "brain-archive:archive", tmp_path / "archive", "test")
+        chats.event("codex:a", "brain_conversation", dt.datetime(2026, 11, 3, 10, tzinfo=dt.timezone.utc),
+                    title="Harbour chat", body=long_chat, payload={"brain_ref": "session:archive:codex:a"})
+        chats.event("codex:b", "brain_session", dt.datetime(2026, 11, 4, 10, tzinfo=dt.timezone.utc),
+                    title="Short", body="hi", payload={"brain_ref": "session:archive:codex:b"})
+        conn.commit()
+    s = Store(path, Decisions(tmp_path / "d.sqlite"))
+    meta = s.meta()
+    assert (meta["first"], meta["last"]) == ("2026-11-02", "2026-11-04")
+    dens = {b["d"]: b for b in s.density("2026-11-01", "2026-11-30")["buckets"]}
+    assert dens["2026-11-02"]["note"] == 1 and dens["2026-11-03"]["convo"] == 1 and dens["2026-11-04"]["convo"] == 1
+    nodes = {n["type"]: n for n in s.window("2026-11-01", "2026-11-30")["nodes"] if n["label"] != "Short"}
+    assert nodes["note"]["label"] == "Bilun" and nodes["convo"]["label"] == "Harbour chat"
+    chat = s.calendar_event(int(nodes["convo"]["id"].split(":")[1]))
+    assert chat["kind"] == "brain_conversation" and chat["ref"] == "session:archive:codex:a"
+    assert len(chat["body"]) == 12000 < chat["body_chars"]
+    note = s.calendar_event(int(nodes["note"]["id"].split(":")[1]))
+    assert note["ref"] == "note:topics/bilun" and note["body"] == "Kural motoru." and "payload" not in note
+
+
 def test_ready_preview_used(tmp_path, monkeypatch):
     from cfv_site import server as srv
     monkeypatch.setenv("CFV_DATA", str(tmp_path))
