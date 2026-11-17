@@ -305,24 +305,38 @@ def _chat_keyword(conn, query: str, start, end) -> tuple[list[int], dict[int, in
 
 
 def _vectors(conn, path: Path, model: str):
-    """Passage vectors for the model with their owners, cached per database file version."""
+    """The model's vectors, one row per distinct passage text, and for each passage its owner, sequence number,
+    lane, day and row; cached per database file version.
+
+    The vectors are read in one pass in table order. Looking each passage's vector up by hash instead reads the file
+    in random order: 9.1 s against 3.4 s for 37k vectors from a cold cache on the VPS (2026-11-17).
+    """
     stat = path.stat()
     key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size, model)
     if key not in _VECTORS:
         _VECTORS.clear()
-        join = "FROM passage p JOIN embedding m ON m.hash=p.hash AND m.model=? JOIN event e ON e.id=p.event_id"
-        count = conn.execute(f"SELECT count(*), max(length(m.vector)) {join}", (model,)).fetchone()
-        if not count[0]:
+        count, size = conn.execute("SELECT count(*), max(length(vector)) FROM embedding WHERE model=?",
+                                   (model,)).fetchone()
+        if not count:
             _VECTORS[key] = None
             return None
-        matrix = np.empty((count[0], count[1] // 4), dtype=np.float32)  # filled row by row: one copy in memory
-        owners, seqs, notes, days = [], [], [], []
-        rows = conn.execute(f"SELECT p.event_id, p.seq, e.kind=?, e.local_date, m.vector {join} "
-                            "ORDER BY p.event_id, p.seq", (NOTE_KIND, model))
-        for i, (owner, seq, is_note, day, vector) in enumerate(rows):
+        matrix = np.empty((count, size // 4), dtype=np.float32)  # filled row by row: one copy in memory
+        row_of = {}
+        for i, (digest, vector) in enumerate(conn.execute("SELECT hash, vector FROM embedding WHERE model=?", (model,))):
             matrix[i] = np.frombuffer(vector, dtype=np.float32)
-            owners.append(owner), seqs.append(seq), notes.append(is_note), days.append(day)
-        _VECTORS[key] = (np.array(owners), np.array(seqs), np.array(notes, dtype=bool), np.array(days), matrix)
+            row_of[digest] = i
+        owners, seqs, notes, days, rows = [], [], [], [], []
+        for owner, seq, is_note, day, digest in conn.execute(
+                "SELECT p.event_id, p.seq, e.kind=?, e.local_date, p.hash FROM passage p JOIN event e ON e.id=p.event_id "
+                "ORDER BY p.event_id, p.seq", (NOTE_KIND,)):
+            if digest in row_of:
+                owners.append(owner), seqs.append(seq), notes.append(is_note), days.append(day)
+                rows.append(row_of[digest])
+        if not rows:
+            _VECTORS[key] = None
+            return None
+        _VECTORS[key] = (np.array(owners), np.array(seqs), np.array(notes, dtype=bool), np.array(days),
+                         np.array(rows), matrix)
     return _VECTORS[key]
 
 
@@ -336,14 +350,14 @@ def _semantic(conn, path, query, start, end, embedder) -> tuple[dict[bool, tuple
     index = _vectors(conn, path, model)
     if index is None:
         return empty, f"no passage vectors for {model}: run embed"
-    owners, seqs, is_note, days, matrix = index
+    owners, seqs, is_note, days, rows, matrix = index
     try:
         vector = _unit((embedder or http_embedder(url, model, timeout=30))([query]))[0]
     except Exception as exc:  # an unreachable or failing server must not break keyword recall
         return empty, f"embedding server failed ({type(exc).__name__}): keyword results only"
     if vector.shape[0] != matrix.shape[1]:
         return empty, f"query vector has {vector.shape[0]} dimensions, stored vectors {matrix.shape[1]}: rerun embed"
-    sims = matrix @ vector
+    sims = (matrix @ vector)[rows]  # one score per distinct text, then one per passage
     keep = np.ones(len(sims), dtype=bool)
     if start:
         keep &= days >= start
